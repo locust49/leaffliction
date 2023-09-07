@@ -1,11 +1,12 @@
 from enum import Enum
+import os
 import cv2
 import matplotlib.pyplot as plt
 import argparse
 from leaffliction import configure_logger
+from dotenv import load_dotenv
 
 
-# create an enum for the augmentation methods (rotate, flip, blur, contrast, scale and combine)
 class MethodEnum(Enum):
 	ORIGINAL = 0
 	ROTATE = 1
@@ -19,80 +20,122 @@ class Augmentation:
 	"""
 	Class used to augment images
 	"""
-	def __init__(self, image_path, nargs=6, combine_methods=False):
+	def __init__(self, parsed_args):
 		"""
 		Constructor of the Augmentation class
-		-> (initialize the image, title, extension, number of arguments and axes)
-		:param image_path:
-		:param nargs:
-		:param combine_methods:
+		-> (initialize the images, input directory, titles, extensions, number of arguments and axes)
+		:param parsed_args: the command line parsed arguments
 		"""
-		self.image = cv2.imread(image_path)
-		self.title = image_path.split('/')[-1].split('.')[0]
-		self.extension = image_path.split('/')[-1].split('.')[1]
-		self.nargs = nargs + (1 if combine_methods else 0)
-		self.fig, self.axes = plt.subplots(1,  nargs + (1 if combine_methods else 0), figsize=(25, 10))
+		self.images = parsed_args.files
+		n_rows = min(len(self.images), os.getenv("MAX_NUMBER_OF_ROWS", 5)) if parsed_args.directory else len(self.images)
+		self.input_directory = [
+			"/".join(path.replace('\\', '/').split('/')[:-1]) if '/' in path else "." for path in self.images]
+		self.title = [
+			path.replace('\\', '/').split('/')[-1].split('.')[0] if '.' in path else "" for path in parsed_args.files]
+		self.extension = [
+			(path.split('/')[-1].split('.')[1] if '.' in path.split('/')[-1] else '')
+			if '/' in path else '' for path in parsed_args.files]
+		self.nargs = parsed_args.number + (1 if parsed_args.combined else 0)
+		self.number_of_rows = n_rows
+		self.fig, self.axes = plt.subplots(self.number_of_rows, self.nargs, figsize=(self.nargs * 5, self.number_of_rows * 5))
 
-	def rotate(self, angle: int = 45, **kwargs):
+	@staticmethod
+	def rotate(img, angle: int = 45, **kwargs):
 		"""
 		Rotate the image by the given angle
+		:param img: the image to be rotated
 		:param angle: the angle to rotate the image
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the rotated image
 		"""
-		(h, w) = self.image.shape[:2]
+		(h, w) = img.shape[:2]
 		center = (w / 2, h / 2)
 		matrix = cv2.getRotationMatrix2D(center, angle, 1)
-		rotated = cv2.warpAffine(self.image, matrix, (w, h))
+		rotated = cv2.warpAffine(img, matrix, (w, h))
 		return rotated
 
-	def flip(self, **kwargs):
+	@staticmethod
+	def flip(img, **kwargs):
 		"""
 		Flip the given image around the x-axis
+		:param img: the image to be flipped
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the flipped image
 		"""
-		flipped = cv2.flip(self.image, 0)
+		flipped = cv2.flip(img, 0)
 		return flipped
 
-	def blur(self, **kwargs):
+	@staticmethod
+	def blur(img, **kwargs):
 		"""
 		Blur the given image using a Gaussian filter
+		:param img: the image to be blurred
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the blurred image
 		"""
-		blurred = cv2.GaussianBlur(self.image, (7, 7), 0)
+		blurred = cv2.GaussianBlur(img, (11, 11), 0)
 		return blurred
 
-	def heighten_contrast(self, **kwargs):
+	@staticmethod
+	def heighten_contrast(img, **kwargs):
 		"""
 		Raise the contrast of the given image
+		:param img: the image to raise the contrast of
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the image with higher contrast
 		"""
-		higher_contrast = cv2.convertScaleAbs(self.image, alpha=1.5)
+		higher_contrast = cv2.convertScaleAbs(img, alpha=1.5)
 		return higher_contrast
 
-	def scale(self, **kwargs):
+	@staticmethod
+	def scale(img, zoom_factor=1.2, **kwargs):
 		"""
 		Scale the given image
+		:param img: the image to be scaled
+		:param zoom_factor: the factor to scale the image
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the scaled image
 		"""
-		scaled = cv2.resize(self.image, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+		(h, w) = img.shape[:2]
+		center = (w // 2, h // 2)
+		new_h = int(h / zoom_factor)
+		new_w = int(w / zoom_factor)
+		scaled = img[center[1] - new_h // 2:center[1] + new_h // 2, center[0] - new_w // 2:center[0] + new_w // 2]
 		return scaled
 
-	def plot_augmentation(self, axe, augmented_image, suffix):
+	def combine_all_methods_in_image(self, img):
+		"""
+		Combine the augmented images in a single image
+		:return: the combined image
+		"""
+		rotated = self.rotate(img)
+		flipped = self.flip(rotated)
+		blurred = self.blur(flipped)
+		raised_contrast = self.heighten_contrast(blurred)
+		combined = self.scale(raised_contrast)
+		# TODO: add other methods
+		return combined
+
+	def plot_augmentation(self, applied_method, augmented_image, img_index, suffix):
 		"""
 		Plot the augmented image
-		:param axe: axe where to plot the augmented_image
-		:param augmented_image: image to be plotted
+		:param applied_method: the method applied on the image for augmentation
+		:param augmented_image: the augmented image to be plotted
+		:param img_index: index of the image
 		:param suffix: augmentation method name to be added to the title
 		:return: None
 		"""
 		if augmented_image is not None:
-			axe.imshow(augmented_image)
-			axe.set_title(f"{self.title}_{suffix}.{self.extension}")
+			if img_index < self.number_of_rows:
+				self.axes[0][applied_method].set_title(f"{suffix.capitalize()}", fontsize=self.nargs * 7)
+				self.axes[img_index][applied_method].imshow(augmented_image)
+				self.axes[img_index][applied_method].axis("off")
+			if method == 0:
+				pass
+			path = os.path.join(self.input_directory[img_index], f"{self.title[img_index]}_{suffix}.{self.extension[img_index]}")
+			cv2.imwrite(path, augmented_image)
+			logger.info(f"Saved augmented image \"{self.title[img_index]}_{suffix}.{self.extension[img_index]}\""
+															+ f" in \"{self.input_directory[img_index]}\"")
 
 	def apply_augmentation(self, method_enum, combine=False, **kwargs):
 		"""
@@ -102,39 +145,41 @@ class Augmentation:
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the augmented image
 		"""
-		if method_enum == MethodEnum.ORIGINAL.value:
-			self.plot_augmentation(self.axes[MethodEnum.ORIGINAL.value], self.image, "original")
-		elif method_enum == MethodEnum.ROTATE.value:
-			rotated = self.rotate(**kwargs)
-			self.plot_augmentation(self.axes[MethodEnum.ROTATE.value], rotated, "rotated")
-		elif method_enum == MethodEnum.FLIP.value:
-			flipped = self.flip(**kwargs)
-			self.plot_augmentation(self.axes[MethodEnum.FLIP.value], flipped, "flipped")
-		elif method_enum == MethodEnum.BLUR.value:
-			blurred = self.blur(**kwargs)
-			self.plot_augmentation(self.axes[MethodEnum.BLUR.value], blurred, "blurred")
-		elif method_enum == MethodEnum.CONTRAST.value:
-			raised_contrast = self.heighten_contrast(**kwargs)
-			self.plot_augmentation(self.axes[MethodEnum.CONTRAST.value], raised_contrast, "raised_contrast")
-		elif method_enum == MethodEnum.SCALE.value:
-			scaled = self.scale()
-			self.plot_augmentation(self.axes[MethodEnum.SCALE.value], scaled, "scaled")
-		elif combine:
-			combined = self.combine_all_methods_in_image()  # tbd
-			self.plot_augmentation(self.axes[self.nargs - 1], combined, "combined")
 
-	def combine_all_methods_in_image(self):
-		"""
-		Combine the augmented images in a single image
-		:return: the combined image
-		"""
-		self.image = self.rotate()
-		self.image = self.flip()
-		self.image = self.blur()
-		self.image = self.heighten_contrast()
-		combined = self.scale()
-		# TODO: add other combinations probably using enums (methods , number of methods)
-		return combined
+		augmentation_functions = {
+			MethodEnum.ORIGINAL.value: None,
+			MethodEnum.ROTATE.value: self.rotate,
+			MethodEnum.FLIP.value: self.flip,
+			MethodEnum.BLUR.value: self.blur,
+			MethodEnum.CONTRAST.value: self.heighten_contrast,
+			MethodEnum.SCALE.value: self.scale,
+		}
+
+		for img_index, img in enumerate(self.images):
+			# Verify if the image is valid (not None and path exists)
+			if img is None or not os.path.exists(img):
+				logger.error(f"Invalid image path: {img}")
+				self.images.pop(img_index)
+				self.number_of_rows = self.number_of_rows - 1
+				self.input_directory.pop(img_index)
+				self.extension.pop(img_index)
+				self.fig, self.axes = (
+					plt.subplots(self.number_of_rows, self.nargs, figsize=(self.nargs * 5, self.number_of_rows * 5)))
+				continue
+			loaded_image = cv2.imread(img)
+			if method_enum == self.nargs - 1:
+				if combine:
+					augmented_img = self.combine_all_methods_in_image(loaded_image)
+					self.plot_augmentation(method_enum, augmented_img, img_index, "combined")
+			elif method_enum != MethodEnum.ORIGINAL.value:
+				augmented_img = augmentation_functions[method_enum](loaded_image, **kwargs)
+				self.plot_augmentation(method_enum, augmented_img, img_index, MethodEnum(method_enum).name.lower())
+
+			elif method_enum == MethodEnum.ORIGINAL.value:
+				augmented_img = loaded_image
+				self.plot_augmentation(method_enum, augmented_img, img_index, MethodEnum(method_enum).name.lower())
+			else:
+				logger.error("Invalid method_enum value")
 
 
 def configurate_parser():
@@ -143,29 +188,74 @@ def configurate_parser():
 	:return: the parsed arguments
 	"""
 	_parser = argparse.ArgumentParser(description="Augment images of leaves dataset")
-	_parser.add_argument("-f", "--files", nargs='+', help="image files to be augmented",
-																						required=True)
-	_parser.add_argument("-o", "--output", help="Output directory where to store the plots",
-																						default="./augmented_directory")
+	_parser.add_argument("-d", "--directory", help="Directory where to get the images to be augmented")
+	_parser.add_argument("-f", "--files", nargs='+', help="image files to be augmented")
 	_parser.add_argument("-v", "--verbose", help="Enable verbose mode", action="store_true")
 	_parser.add_argument("-n", "--number", help="Number of augmented images to be generated", default=6)
-	_parser.add_argument("-c", "--combined", help="Combine the augmented images in a single image", action="store_true")
-	return _parser
+	_parser.add_argument(
+		"-c",
+		"--combined",
+		help="Apply a combination of all the augmented method in a single image",
+		action="store_true")
+	_parser.add_argument(
+		"-s", "--save-plot", help="Save the resulted plot in the root directory",
+		action="store_true", default=False)
+	_parser.add_argument("-max", "--max-number-of-rows", help="Maximum number of rows in the resulted plot", default=10)
+	arguments = _parser.parse_args()
+
+	# Check if both -f and -d are provided
+	if arguments.files and arguments.directory:
+		_parser.error("Both -f and -d options cannot be used simultaneously. Use either -f or -d.")
+	if not arguments.files and not arguments.directory:
+		_parser.error("Either -f or -d option must be used.")
+	if arguments.max_number_of_rows < 1:
+		_parser.error("Maximum number of rows must be at least 1.")
+	elif arguments.files and len(arguments.files) > arguments.max_number_of_rows and not arguments.save_plot:
+		error_msg = ("Maximum number of rows that can be showed cannot be greater than 10 for performance issues.\n" +
+															f"{' ' * len('Augmentation.py: error: ')}" +
+															"Use -s option to save the resulted plot in the root directory.")
+		_parser.error(error_msg)
+	return arguments
+
+
+def get_files_in_directory(directory):
+	"""
+	Recursively get all files within a directory and its subdirectories.
+	:param directory: The directory to start the search.
+	:return: A list of file paths.
+	"""
+	file_paths = []
+	for root, _, files in os.walk(directory):
+		for file in files:
+			file_paths.append(os.path.join(root, file))
+	return file_paths
 
 
 if __name__ == "__main__":
-	parser = configurate_parser()
-	args = parser.parse_args()
+	args = configurate_parser()
 	logger = configure_logger(args.verbose)
-	image = args.files[0]
+	load_dotenv()
 	if args.number < 6:
-		logger.error("Using default number of augmented images (6)")
+		logger.error("Using default number of augmented methods (6)")
 		args.number = 6
 	elif args.number > 10:  # TBD (depending on how many method we have)
 		logger.error("Using maximum number of augmented images (10)")
 		args.number = 10
-	augmentation_instance = Augmentation(image, args.number, args.combined)
-	augmentation_instance.fig.suptitle(f"{image.split('/')[-1]} augmentations")
+	if args.directory and not args.files:
+		logger.info("Using images from directory")
+		args.files = get_files_in_directory(args.directory)
+		logger.info(f"{len(args.files)} images found in {args.directory} and its subdirectories.")
+		if len(args.files) == 0:
+			logger.error("No images found in the specified directory.\tExiting now...")
+			exit(1)
+	augmentation_instance = Augmentation(args)
 	for method in range(0, args.number + (1 if args.combined else 0)):
 		augmentation_instance.apply_augmentation(method, args.combined)
-	plt.show()
+	if len(args.files) > 0:
+		if args.save_plot:
+			plt.tight_layout()
+			plt.savefig("augmented_images_plot.png")
+			logger.info("Saved augmented images plot in the root directory as \"augmented_images_plot.png\"")
+		elif not args.save_plot and len(augmentation_instance.axes) <= 10:
+			print("len plots: ", len(augmentation_instance.axes))
+			plt.show()
