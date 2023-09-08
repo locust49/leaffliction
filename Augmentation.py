@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import argparse
 from leaffliction import configure_logger
 from dotenv import load_dotenv
+import numpy as np
 
 
 class MethodEnum(Enum):
@@ -14,6 +15,7 @@ class MethodEnum(Enum):
 	BLUR = 3
 	CONTRAST = 4
 	SCALE = 5
+	SHEAR = 6
 
 
 class Augmentation:
@@ -26,15 +28,14 @@ class Augmentation:
 		-> (initialize the images, input directory, titles, extensions, number of arguments and axes)
 		:param parsed_args: the command line parsed arguments
 		"""
-		self.images = parsed_args.files
-		n_rows = min(len(self.images), os.getenv("MAX_NUMBER_OF_ROWS", 5)) if parsed_args.directory else len(self.images)
+		all_images = parsed_args.files
+		self.images = [img for img in all_images if img is not None and os.path.exists(img)]
+		images_filename = [path.replace('\\', '/').split('/')[-1] for path in self.images]
+		n_rows = min(len(self.images), os.getenv("MAX_NUMBER_OF_ROWS", 10)) if parsed_args.directory else len(self.images)
 		self.input_directory = [
 			"/".join(path.replace('\\', '/').split('/')[:-1]) if '/' in path else "." for path in self.images]
-		self.title = [
-			path.replace('\\', '/').split('/')[-1].split('.')[0] if '.' in path else "" for path in parsed_args.files]
-		self.extension = [
-			(path.split('/')[-1].split('.')[1] if '.' in path.split('/')[-1] else '')
-			if '/' in path else '' for path in parsed_args.files]
+		self.title = [filename.split('.')[0] if '.' in filename else "" for filename in images_filename]
+		self.extension = [filename.split('.')[1] if '.' in filename else "" for filename in images_filename]
 		self.nargs = parsed_args.number + (1 if parsed_args.combined else 0)
 		self.number_of_rows = n_rows
 		self.fig, self.axes = plt.subplots(self.number_of_rows, self.nargs, figsize=(self.nargs * 5, self.number_of_rows * 5))
@@ -48,10 +49,10 @@ class Augmentation:
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the rotated image
 		"""
-		(h, w) = img.shape[:2]
-		center = (w / 2, h / 2)
+		(height, width) = img.shape[:2]
+		center = (width / 2, height / 2)
 		matrix = cv2.getRotationMatrix2D(center, angle, 1)
-		rotated = cv2.warpAffine(img, matrix, (w, h))
+		rotated = cv2.warpAffine(img, matrix, (width, height), borderValue=(255, 255, 255))
 		return rotated
 
 	@staticmethod
@@ -73,7 +74,7 @@ class Augmentation:
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the blurred image
 		"""
-		blurred = cv2.GaussianBlur(img, (11, 11), 0)
+		blurred = cv2.GaussianBlur(img, (7, 7), 0)
 		return blurred
 
 	@staticmethod
@@ -96,12 +97,47 @@ class Augmentation:
 		:param kwargs: additional keyword arguments for the specific augmentation method
 		:return: the scaled image
 		"""
-		(h, w) = img.shape[:2]
-		center = (w // 2, h // 2)
-		new_h = int(h / zoom_factor)
-		new_w = int(w / zoom_factor)
-		scaled = img[center[1] - new_h // 2:center[1] + new_h // 2, center[0] - new_w // 2:center[0] + new_w // 2]
+		(height, width) = img.shape[:2]
+		center = (width // 2, height // 2)
+		new_height = int(height / zoom_factor)
+		new_width = int(width / zoom_factor)
+		scaled = img[center[1] - new_height // 2:center[1] + new_height // 2,
+															center[0] - new_width // 2:center[0] + new_width // 2]
 		return scaled
+
+	@staticmethod
+	def shear(img, axis=1):
+		"""
+		Shear the given image along the specified axis.
+		:param img: The image to be sheared.
+		:param axis: The axis along which the image is to be sheared. (0 for vertical, 1 for horizontal)
+		:return: The sheared image.
+		"""
+		(height, width) = img.shape[:2]
+		shear_amount = min(height, width) // 4
+		starting_points = np.array([[0, 0], [width, 0], [0, height], [width, height]], dtype=np.float32)
+		pts1 = np.array([[0, 0], [width, 0], [0, height], [width, height]], dtype=np.float32)
+
+		if axis == 0:  # over vertical axis
+			destination_points = np.array([
+				[0, 0],
+				[width, 0],
+				[shear_amount, height],
+				[width - shear_amount, height]],
+				dtype=np.float32)
+		elif axis == 1:  # over horizontal axis
+			destination_points = np.array([
+				[0, 0],
+				[width - shear_amount, 0],
+				[shear_amount, height],
+				[width, height]],
+				dtype=np.float32)
+		else:
+			raise ValueError("Invalid axis value. Use 0 for vertical shear or 1 for horizontal shear.")
+
+		matrix = cv2.getPerspectiveTransform(starting_points, destination_points)
+		sheared = cv2.warpPerspective(img, matrix, (width, height))
+		return sheared
 
 	def combine_all_methods_in_image(self, img):
 		"""
@@ -113,6 +149,7 @@ class Augmentation:
 		blurred = self.blur(flipped)
 		raised_contrast = self.heighten_contrast(blurred)
 		combined = self.scale(raised_contrast)
+		# combined = self.distort(scaled) not include distortion
 		# TODO: add other methods
 		return combined
 
@@ -153,19 +190,14 @@ class Augmentation:
 			MethodEnum.BLUR.value: self.blur,
 			MethodEnum.CONTRAST.value: self.heighten_contrast,
 			MethodEnum.SCALE.value: self.scale,
+			MethodEnum.SHEAR.value: self.shear
 		}
 
 		for img_index, img in enumerate(self.images):
 			# Verify if the image is valid (not None and path exists)
-			if img is None or not os.path.exists(img):
-				logger.error(f"Invalid image path: {img}")
-				self.images.pop(img_index)
-				self.number_of_rows = self.number_of_rows - 1
-				self.input_directory.pop(img_index)
-				self.extension.pop(img_index)
-				self.fig, self.axes = (
-					plt.subplots(self.number_of_rows, self.nargs, figsize=(self.nargs * 5, self.number_of_rows * 5)))
-				continue
+			if len(self.images) == 0:
+				logger.error("No valid images found.\tExiting now...")
+				exit(1)
 			loaded_image = cv2.imread(img)
 			if method_enum == self.nargs - 1:
 				if combine:
@@ -191,7 +223,7 @@ def configurate_parser():
 	_parser.add_argument("-d", "--directory", help="Directory where to get the images to be augmented")
 	_parser.add_argument("-f", "--files", nargs='+', help="image files to be augmented")
 	_parser.add_argument("-v", "--verbose", help="Enable verbose mode", action="store_true")
-	_parser.add_argument("-n", "--number", help="Number of augmented images to be generated", default=6)
+	_parser.add_argument("-n", "--number", type=int, help="Number of augmented images to be generated", default=6)
 	_parser.add_argument(
 		"-c",
 		"--combined",
